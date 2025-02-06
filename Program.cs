@@ -24,6 +24,8 @@ namespace CropPNG
         [STAThread]
         static void Main(string[] args)
         {
+            IsConsole = GetConsoleWindow() != IntPtr.Zero;
+
             bool overwrite = true;
             var args_list = (args ?? new string[0]).ToList();
             if (args_list.Count > 0)
@@ -70,34 +72,77 @@ namespace CropPNG
                 }
             }
 
-            string filename = string.Join(" ", args_list);
-            FileInfo finfo = new FileInfo(filename);
-            if (!finfo.Exists)
+            List<FileInfo> validPaths = new List<FileInfo>();
+            string currentPath = "";
+            for (int i = 0; i < args_list.Count; i++)
             {
-                Alert(filename + " does not exist");
-                return;
+                var segment = args_list[i];
+                //check if starts with a drive letter
+                if (segment.Length >= 2 && segment[1] == ':')
+                {
+                    if(currentPath.Length > 0)
+                        Alert(currentPath + " does not exist");
+                    currentPath = segment;
+                }
+                else
+                {
+                    if (currentPath.Length > 0) currentPath += " ";
+                    currentPath += segment;
+                }
+                var finfo = new FileInfo(currentPath);
+                if (finfo.Exists)
+                {
+                    validPaths.Add(finfo);
+                    currentPath = "";
+                }
             }
-            if (finfo.Extension.ToUpperInvariant().Trim('.') != "PNG")
+            if (currentPath.Length > 0)
+                Alert(currentPath + " does not exist");
+            foreach (var finfo in validPaths)
             {
-                Alert(finfo.Extension + " not supported");
-                return;
+                var filename = finfo.FullName;
+                //string filename = string.Join(" ", args_list);
+                //FileInfo finfo = new FileInfo(filename);
+                if (!finfo.Exists)
+                {
+                    Alert(finfo.FullName + " does not exist");
+                    continue;
+                }
+                if (finfo.Extension.ToUpperInvariant().Trim('.') != "PNG")
+                {
+                    Alert(finfo.Extension + " not supported");
+                    continue;
+                }
+                try
+                {
+                    CropImage(finfo, overwrite);
+                }
+                catch (Exception ex)
+                {
+                    Alert(ex.Message);
+                }
             }
-            CropImage(filename, overwrite);
-            File.SetLastWriteTimeUtc(filename, finfo.LastWriteTimeUtc.AddSeconds(1));
-            File.SetCreationTimeUtc(filename, finfo.CreationTimeUtc.AddSeconds(1));
         }
 
         static void Alert(string message)
         {
-            IsConsole = GetConsoleWindow() != IntPtr.Zero;
-            if (IsConsole) { Console.WriteLine(message); }
+            if (IsConsole) { WriteLine(message); }
             else { MessageBox.Show(message); }
         }
 
-        static void CropImage(string filename, bool overwrite)
+        static void WriteLine(string message)
         {
+            if (Debugger.IsAttached) Debug.WriteLine(message);
+            Console.WriteLine(message);
+        }
+
+        static void CropImage(FileInfo finfo, bool overwrite)
+        {
+            var lastWrite = finfo.LastWriteTimeUtc;
+            var creationTime = finfo.CreationTimeUtc;
+
             // Load the bitmap
-            using Bitmap originalBitmap = Bitmap.FromFile(filename) as Bitmap;
+            using Bitmap originalBitmap = Bitmap.FromFile(finfo.FullName) as Bitmap;
 
             // Find the min/max non-white/transparent pixels
             Point min = new Point(int.MaxValue, int.MaxValue);
@@ -124,8 +169,6 @@ namespace CropPNG
                 }
             }
 
-            Console.WriteLine("Cropping from " + min + " to " + max);
-
             // Create a new bitmap from the crop rectangle
             Rectangle cropRectangle = new Rectangle(min.X, min.Y, max.X - min.X, max.Y - min.Y);
             Bitmap newBitmap = new Bitmap(cropRectangle.Width, cropRectangle.Height);
@@ -135,12 +178,12 @@ namespace CropPNG
                         cropRectangle, GraphicsUnit.Pixel);
             }
 
-            var extension = Path.GetExtension(filename).ToLower();
-            var saveAs = filename;
+            var extension = finfo.Extension.ToLower();
+            var saveAs = finfo.FullName;
+            var basename = Path.GetFileNameWithoutExtension(saveAs);
             if (!overwrite)
             {
-                var basename = Path.GetFileNameWithoutExtension(filename) + "_Crop" + new Random().Next(100);
-                saveAs = Path.Combine(Path.GetDirectoryName(filename), basename + extension);
+                saveAs = Path.Combine(Path.GetDirectoryName(saveAs), basename + "_Crop" + extension);
             }
 
             if (extension == ".png")
@@ -151,6 +194,19 @@ namespace CropPNG
                 newBitmap.Save(saveAs, System.Drawing.Imaging.ImageFormat.Bmp);
             else if (extension == ".gif")
                 newBitmap.Save(saveAs, System.Drawing.Imaging.ImageFormat.Gif);
+
+            var saveFilename = Path.GetFileName(saveAs);
+            WriteLine($"Saved \"{saveFilename}\" - Crop from {min} to {max} ({cropRectangle.Width}x{cropRectangle.Height}");
+
+            try
+            {
+                File.SetLastWriteTimeUtc(saveFilename, lastWrite.AddSeconds(1));
+                File.SetCreationTimeUtc(saveFilename, creationTime.AddSeconds(1));
+            }
+            catch (Exception ex)
+            {
+                WriteLine(ex.Message);
+            }
         }
     }
 
