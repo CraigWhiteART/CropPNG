@@ -1,6 +1,6 @@
 # CropPNG
 
-CropPNG is a lightweight and super-fast C# program for cropping PNG images with minimal overhead. It leverages **BmpPixelSnoop** for efficient pixel manipulation.
+CropPNG is a lightweight and super-fast C# program for cropping PNG/JPG/GIF/BMP images with minimal overhead. It leverages **BmpPixelSnoop** for efficient pixel manipulation.
 
 ## Features
 - Overwrites the original file by default.
