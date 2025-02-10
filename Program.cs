@@ -136,47 +136,13 @@ namespace CropPNG
             Console.WriteLine(message);
         }
 
-        static void CropImage(FileInfo finfo, bool overwrite)
+        static void CropImage(FileInfo finfo, bool overwrite, int padding = 0)
         {
             var lastWrite = finfo.LastWriteTimeUtc;
             var creationTime = finfo.CreationTimeUtc;
 
-            // Load the bitmap
-            using Bitmap originalBitmap = Bitmap.FromFile(finfo.FullName) as Bitmap;
-
-            // Find the min/max non-white/transparent pixels
-            Point min = new Point(int.MaxValue, int.MaxValue);
-            Point max = new Point(int.MinValue, int.MinValue);
-
-            using (BmpPixelSnoop fbmp = new BmpPixelSnoop(originalBitmap))
-            {
-                Color topLeft = fbmp.GetPixel(0, 0);
-
-                for (int x = 0; x < fbmp.Width; ++x)
-                {
-                    for (int y = 0; y < fbmp.Height; ++y)
-                    {
-                        Color pixelColor = fbmp.GetPixel(x, y);
-                        if (!(pixelColor.R == topLeft.R && pixelColor.G == topLeft.G && pixelColor.B == topLeft.B))
-                        {
-                            if (x < min.X) min.X = x;
-                            if (y < min.Y) min.Y = y;
-
-                            if (x > max.X) max.X = x;
-                            if (y > max.Y) max.Y = y;
-                        }
-                    }
-                }
-            }
-
-            // Create a new bitmap from the crop rectangle
-            Rectangle cropRectangle = new Rectangle(min.X, min.Y, max.X - min.X, max.Y - min.Y);
-            Bitmap newBitmap = new Bitmap(cropRectangle.Width, cropRectangle.Height);
-            using (Graphics g = Graphics.FromImage(newBitmap))
-            {
-                g.DrawImage(originalBitmap, new Rectangle(0, 0, newBitmap.Width, newBitmap.Height),
-                        cropRectangle, GraphicsUnit.Pixel);
-            }
+            Rectangle cropRectangle;
+            Bitmap newBitmap = CropImage(finfo, padding, out cropRectangle);
 
             var extension = finfo.Extension.ToLower();
             var saveAs = finfo.FullName;
@@ -196,7 +162,7 @@ namespace CropPNG
                 newBitmap.Save(saveAs, System.Drawing.Imaging.ImageFormat.Gif);
 
             var saveFilename = Path.GetFileName(saveAs);
-            WriteLine($"Saved \"{saveFilename}\" - Crop from {min} to {max} ({cropRectangle.Width}x{cropRectangle.Height}");
+            WriteLine($"Saved \"{saveFilename}\" - Crop to {cropRectangle}");
 
             try
             {
@@ -208,165 +174,65 @@ namespace CropPNG
                 WriteLine(ex.Message);
             }
         }
+
+        private static Bitmap CropImage(FileInfo finfo, int padding, out Rectangle cropRectangle)
+        {
+            // Load the bitmap
+            using Bitmap originalBitmap = Bitmap.FromFile(finfo.FullName) as Bitmap;
+            cropRectangle = GetCropBounds(originalBitmap);
+            cropRectangle = PadRectangle(cropRectangle, padding, originalBitmap.Width, originalBitmap.Height);
+
+            // Create a new bitmap from the crop rectangle
+            Bitmap newBitmap = new Bitmap(cropRectangle.Width, cropRectangle.Height);
+            using (Graphics g = Graphics.FromImage(newBitmap))
+            {
+                g.DrawImage(originalBitmap, new Rectangle(0, 0, newBitmap.Width, newBitmap.Height),
+                        cropRectangle, GraphicsUnit.Pixel);
+            }
+            
+            originalBitmap.Dispose();//Close the file
+
+            return newBitmap;
+        }
+
+        static Rectangle GetCropBounds(Bitmap bmp)
+        {
+            using (var fbmp = new BmpPixelSnoop(bmp))
+            {
+                int w = fbmp.Width, h = fbmp.Height, bg = fbmp.GetPixel(0, 0).ToArgb();
+                int top = 0, bottom = h - 1, left = 0, right = w - 1;
+
+                // Move top edge down until a non–background pixel is found.
+                while (top < h && Enumerable.Range(0, w).All(x => fbmp.GetPixel(x, top).ToArgb() == bg))
+                    top++;
+
+                // Move bottom edge up.
+                while (bottom >= top && Enumerable.Range(0, w).All(x => fbmp.GetPixel(x, bottom).ToArgb() == bg))
+                    bottom--;
+
+                // Move left edge right.
+                while (left < w && Enumerable.Range(top, bottom - top + 1).All(y => fbmp.GetPixel(left, y).ToArgb() == bg))
+                    left++;
+
+                // Move right edge left.
+                while (right >= left && Enumerable.Range(top, bottom - top + 1).All(y => fbmp.GetPixel(right, y).ToArgb() == bg))
+                    right--;
+
+                return new Rectangle(left, top, right - left + 1, bottom - top + 1);
+            }
+        }
+
+        static Rectangle PadRectangle(Rectangle rect, int padding, int imageWidth, int imageHeight)
+        {
+            // Calculate new coordinates with padding, ensuring they don't go beyond the image bounds.
+            int newX = Math.Max(0, rect.X - padding);
+            int newY = Math.Max(0, rect.Y - padding);
+            int newRight = Math.Min(imageWidth, rect.Right + padding);
+            int newBottom = Math.Min(imageHeight, rect.Bottom + padding);
+
+            return new Rectangle(newX, newY, newRight - newX, newBottom - newY);
+        }
     }
 
-    unsafe class BmpPixelSnoop : IDisposable
-    {
-        // A reference to the bitmap to be wrapped
-        private readonly Bitmap wrappedBitmap;
-
-        // The bitmap's data (once it has been locked)
-        private BitmapData data = null;
-
-        // Pointer to the first pixel
-        private readonly byte* scan0;
-
-        // Number of bytes per pixel
-        private readonly int depth;
-
-        // Number of bytes in an image row
-        private readonly int stride;
-
-        // The bitmap's width
-        private readonly int width;
-
-        // The bitmap's height
-        private readonly int height;
-
-        /// <summary>
-        /// Constructs a BmpPixelSnoop object, the bitmap
-        /// object to be wraped is passed as a parameter.
-        /// </summary>
-        /// <param name="bitmap">The bitmap to snoop</param>
-        public BmpPixelSnoop(Bitmap bitmap)
-        {
-            wrappedBitmap = bitmap ?? throw new ArgumentException("Bitmap parameter cannot be null", "bitmap");
-
-            // Currently works only for: PixelFormat.Format32bppArgb
-            if (wrappedBitmap.PixelFormat != PixelFormat.Format32bppArgb)
-                throw new System.ArgumentException("Only PixelFormat.Format32bppArgb is supported", "bitmap");
-
-            // Record the width & height
-            width = wrappedBitmap.Width;
-            height = wrappedBitmap.Height;
-
-            // So now we need to lock the bitmap so that we can gain access
-            // to it's raw pixel data.  It will be unlocked when this snoop is 
-            // disposed.
-            var rect = new Rectangle(0, 0, wrappedBitmap.Width, wrappedBitmap.Height);
-
-            try
-            {
-                data = wrappedBitmap.LockBits(rect, ImageLockMode.ReadWrite, wrappedBitmap.PixelFormat);
-            }
-            catch (Exception ex)
-            {
-                throw new System.InvalidOperationException("Could not lock bitmap, is it already being snooped somewhere else?", ex);
-            }
-
-            // Calculate number of bytes per pixel
-            depth = Bitmap.GetPixelFormatSize(data.PixelFormat) / 8; // bits per channel
-
-            // Get pointer to first pixel
-            scan0 = (byte*)data.Scan0.ToPointer();
-
-            // Get the number of bytes in an image row
-            // this will be used when determining a pixel's
-            // memory address.
-            stride = data.Stride;
-        }
-
-        /// <summary>
-        /// Disposes BmpPixelSnoop object
-        /// </summary>
-        public void Dispose()
-        {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-
-        /// <summary>
-        /// Disposes BmpPixelSnoop object, we unlock
-        /// the wrapped bitmap.
-        /// </summary>
-        protected virtual void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                if (wrappedBitmap != null)
-                    wrappedBitmap.UnlockBits(data);
-            }
-            // free native resources if there are any.
-        }
-
-        /// <summary>
-        /// Calculate the pointer to a pixel at (x, x)
-        /// </summary>
-        /// <param name="x">The pixel's x coordinate</param>
-        /// <param name="y">The pixel's y coordinate</param>
-        /// <returns>A byte* pointer to the pixel's data</returns>
-        private byte* PixelPointer(int x, int y)
-        {
-            return scan0 + y * stride + x * depth;
-        }
-
-        /// <summary>
-        /// Snoop's implemetation of GetPixel() which is similar to
-        /// Bitmap's GetPixel() but should be faster.
-        /// </summary>
-        /// <param name="x">The pixel's x coordinate</param>
-        /// <param name="y">The pixel's y coordinate</param>
-        /// <returns>The pixel's colour</returns>
-        public System.Drawing.Color GetPixel(int x, int y)
-        {
-            // Better do the 'decent thing' and bounds check x & y
-            if (x < 0 || y < 0 || x >= width || y >= height)
-                throw new ArgumentException("x or y coordinate is out of range");
-
-            int a, r, g, b;
-
-            // Get a pointer to this pixel
-            byte* p = PixelPointer(x, y);
-
-            // Pull out its colour data
-            b = *p++;
-            g = *p++;
-            r = *p++;
-            a = *p;
-
-            // And return a color value for it (this is quite slow
-            // but allows us to look like Bitmap.GetPixel())
-            return System.Drawing.Color.FromArgb(a, r, g, b);
-        }
-
-        /// <summary>
-        /// Sets the passed colour to the pixel at (x, y)
-        /// </summary>
-        /// <param name="x">The pixel's x coordinate</param>
-        /// <param name="y">The pixel's y coordinate</param>
-        /// <param name="col">The value to be assigned to the pixel</param>
-        public void SetPixel(int x, int y, System.Drawing.Color col)
-        {
-            // Better do the 'decent thing' and bounds check x & y
-            if (x < 0 || y < 0 || x >= width || y >= width)
-                throw new ArgumentException("x or y coordinate is out of range");
-
-            // Get a pointer to this pixel
-            byte* p = PixelPointer(x, y);
-
-            // Set the data
-            *p++ = col.B;
-            *p++ = col.G;
-            *p++ = col.R;
-            *p = col.A;
-        }
-
-        /// <summary>
-        /// The bitmap's width
-        /// </summary>
-        public int Width { get { return width; } }
-
-        // The bitmap's height
-        public int Height { get { return height; } }
-    }
+    
 }
